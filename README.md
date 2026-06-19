@@ -10,8 +10,8 @@ Email-бот для парсинга Excel файлов из Gmail и отпра
 ## Переменные окружения (.env)
 
 ```
-PARSER_EMAIL=ваш_email@gmail.com
-PARSER_PASSWORD=ваш_app_password
+PARSER_EMAIL=<ваш Gmail адрес>
+PARSER_PASSWORD=<16-символьный App Password>
 ```
 
 ## Быстрый запуск
