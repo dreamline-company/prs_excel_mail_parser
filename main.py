@@ -6,9 +6,10 @@ import re
 import openpyxl
 import shutil
 import datetime
-import imaplib  # Добавили
-import email    # Добавили
-from email.header import decode_header  # Добавили
+import imaplib
+import email
+import socket
+from email.header import decode_header
 from dotenv import load_dotenv
 # Глушим предупреждения о подменных сертификатах (защита от SSL ошибок)
 import urllib3
@@ -24,6 +25,14 @@ API_URL = "http://108.181.186.12:8023/prs-analytics/api/repairs/v1/summaries/par
 GMAIL_IMAP_SERVER = "imap.gmail.com"
 GMAIL_IMAP_PORT = 993
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Проверяем что Email и Password загружены
+if not EMAIL or not PASSWORD:
+    print("✗ КРИТИЧЕСКАЯ ОШИБКА: Проверьте файл .env")
+    print(f"  PARSER_EMAIL: {'✓ загружен' if EMAIL else '✗ ОТСУТСТВУЕТ'}")
+    print(f"  PARSER_PASSWORD: {'✓ загружен' if PASSWORD else '✗ ОТСУТСТВУЕТ'}")
+    print("\nВсе параметры должны быть указаны в .env файле!")
+    exit(1)
 
 # ==========================================
 # 2. СЛОВАРИ ДЛЯ ПАРСЕРА
@@ -227,15 +236,25 @@ def make_key(item):
 def connect_to_gmail():
     """Подключение к Gmail по IMAP SSL"""
     try:
-        imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT)
+        print(f"[ПОЧТА] Подключаюсь к {GMAIL_IMAP_SERVER}:{GMAIL_IMAP_PORT}...")
+        imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, timeout=10)
+        print(f"[ПОЧТА] Авторизация пользователя: {EMAIL}...")
         imap.login(EMAIL, PASSWORD)
+        print("[ПОЧТА] ✓ Успешно авторизован в Gmail")
         return imap
     except imaplib.IMAP4.error as e:
-        print(f"[ПОЧТА] ✗ Ошибка авторизации: {e}")
-        print("[ПОЧТА] Убедитесь, что в .env указан App Password (не обычный пароль)")
+        print(f"[ПОЧТА] ✗ Ошибка IMAP: {e}")
+        print("[ПОЧТА] Возможные причины:")
+        print("  1. App Password неправильный (используй пароль приложения, не основной)")
+        print("  2. 2FA (двухфакторная аутентификация) не включена на аккаунте")
+        print("  3. Email неправильный в .env файле")
+        print(f"[ПОЧТА] Email в конфиге: {EMAIL}")
+        return None
+    except socket.timeout:
+        print("[ПОЧТА] ✗ Timeout - сервер Gmail не отвечает. Проверьте интернет соединение")
         return None
     except Exception as e:
-        print(f"[ПОЧТА] ✗ Ошибка подключения: {e}")
+        print(f"[ПОЧТА] ✗ Ошибка подключения: {type(e).__name__}: {e}")
         return None
 
 def get_gmail_attachments():
