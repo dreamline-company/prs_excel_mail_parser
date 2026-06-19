@@ -21,8 +21,8 @@ COPY .env .env 2>/dev/null || true
 # Конвертируем .env в Unix формат (убираем CRLF если есть)
 RUN if [ -f .env ]; then dos2unix .env; fi
 
-# Создаём директории для результатов
-RUN mkdir -p processed results
+# Создаём директорию для обработанных файлов
+RUN mkdir -p processed
 
 # Запускаем приложение
 CMD ["python", "main.py"]

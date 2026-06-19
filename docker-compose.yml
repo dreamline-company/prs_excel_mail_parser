@@ -11,7 +11,6 @@ services:
       - PARSER_EMAIL=${PARSER_EMAIL}
       - PARSER_PASSWORD=${PARSER_PASSWORD}
     volumes:
-      - ./results:/app/results
       - ./processed:/app/processed
     env_file:
       - .env

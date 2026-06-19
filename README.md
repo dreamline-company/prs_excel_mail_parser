@@ -39,8 +39,6 @@ docker build -t prs-parser .
 docker run -d \
   --name prs-parser \
   --env-file .env \
-  -v $(pwd)/results:/app/results \
-  -v $(pwd)/processed:/app/processed \
   prs-parser
 
 # Просмотр логов
@@ -60,9 +58,8 @@ docker rm prs-parser
 ├── Dockerfile          # Конфигурация Docker
 ├── docker-compose.yml  # Docker Compose конфигурация
 ├── .env                # Переменные окружения (не коммитить!)
-├── .dockerignore       # Файлы исключаемые из образа
-└── results/            # Выходные JSON файлы
-    └── YYYY-MM/        # Организованы по месяцам
+├── .env.example        # Пример конфигурации
+└── processed/          # Обработанные Excel файлы
 ```
 
 ## Функционал

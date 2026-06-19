@@ -687,47 +687,6 @@ while True:
                         }
                         result_json.append(record)
 
-            # =========================
-            # JSON САВИНГ (ВАЖНО)
-            # =========================
-
-            date_now = datetime.datetime.now().strftime("%Y-%m-%d")
-            year_month = datetime.datetime.now().strftime("%Y-%m")
-
-            output_dir = os.path.join(script_dir, "results", year_month)
-            os.makedirs(output_dir, exist_ok=True)
-
-            output_filename = f"{date_now}.json"
-            output_path = os.path.join(output_dir, output_filename)
-
-            def make_key(item):
-                return (
-                    item.get("start_date"),
-                    item.get("well_name"),
-                    item.get("shift_type_number"),
-                    item.get("brigade_number"),
-                    item.get("car")
-                )
-
-            existing_data = []
-
-            if os.path.exists(output_path):
-                try:
-                    with open(output_path, "r", encoding="utf-8") as f:
-                        existing_data = json.load(f)
-                except:
-                    existing_data = []
-
-            existing_keys = set(str(x) for x in existing_data)
-
-            for item in result_json:
-                if str(item) not in existing_keys:
-                    existing_data.append(item)
-                    existing_keys.add(str(item))
-
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(existing_data, f, ensure_ascii=False, indent=2)
-
             print(f"[ПАРСЕР] Готово: {len(result_json)} записей")
 
             if result_json:
