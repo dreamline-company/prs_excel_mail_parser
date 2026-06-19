@@ -235,8 +235,17 @@ def make_key(item):
 
 def connect_to_gmail():
     """Подключение к Gmail по IMAP SSL"""
+    # Проверяем переменные окружения
+    if not EMAIL:
+        print("[ПОЧТА] ✗ КРИТИЧЕСКАЯ ОШИБКА: PARSER_EMAIL не установлен в .env!")
+        return None
+    if not PASSWORD:
+        print("[ПОЧТА] ✗ КРИТИЧЕСКАЯ ОШИБКА: PARSER_PASSWORD не установлен в .env!")
+        return None
+    
     try:
         print(f"[ПОЧТА] Подключаюсь к {GMAIL_IMAP_SERVER}:{GMAIL_IMAP_PORT}...")
+        print(f"[ПОЧТА] Email: {EMAIL}")
         imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, timeout=10)
         print(f"[ПОЧТА] Авторизация пользователя: {EMAIL}...")
         imap.login(EMAIL, PASSWORD)
@@ -253,8 +262,16 @@ def connect_to_gmail():
     except socket.timeout:
         print("[ПОЧТА] ✗ Timeout - сервер Gmail не отвечает. Проверьте интернет соединение")
         return None
+    except socket.error as e:
+        print(f"[ПОЧТА] ✗ Socket error: {e}")
+        print("[ПОЧТА] На Linux это часто означает отсутствие CA сертификатов!")
+        print("[ПОЧТА] Решение для Docker:")
+        print("  RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates")
+        return None
     except Exception as e:
-        print(f"[ПОЧТА] ✗ Ошибка подключения: {type(e).__name__}: {e}")
+        print(f"[ПОЧТА] ✗ Ошибка подключения ({type(e).__name__}): {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def get_gmail_attachments():
