@@ -14,9 +14,7 @@ cd prs-parser
 ### 2. Настройка конфигурации
 ```bash
 cp .env.example .env
-# Отредактируйте .env и добавьте:
-# PARSER_EMAIL=dlcprs2026@gmail.com
-# PARSER_PASSWORD=<16-character-app-password>
+# Отредактируйте .env и добавьте реальные значения:
 nano .env
 ```
 
