@@ -9,6 +9,8 @@ import datetime
 import imaplib
 import email
 import socket
+import ssl
+import certifi
 from email.header import decode_header
 from dotenv import load_dotenv
 # Глушим предупреждения о подменных сертификатах (защита от SSL ошибок)
@@ -234,7 +236,7 @@ def make_key(item):
     )
 
 def connect_to_gmail():
-    """Подключение к Gmail по IMAP SSL"""
+    """Подключение к Gmail по IMAP SSL с явным контекстом сертификатов"""
     # Проверяем переменные окружения
     if not EMAIL:
         print("[ПОЧТА] ✗ КРИТИЧЕСКАЯ ОШИБКА: PARSER_EMAIL не установлен в .env!")
@@ -246,7 +248,13 @@ def connect_to_gmail():
     try:
         print(f"[ПОЧТА] Подключаюсь к {GMAIL_IMAP_SERVER}:{GMAIL_IMAP_PORT}...")
         print(f"[ПОЧТА] Email: {EMAIL}")
-        imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, timeout=10)
+        
+        # Создаём SSL контекст с явным путём к сертификатам
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        ssl_context.check_hostname = True
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        
+        imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, ssl_context=ssl_context, timeout=10)
         print(f"[ПОЧТА] Авторизация пользователя: {EMAIL}...")
         imap.login(EMAIL, PASSWORD)
         print("[ПОЧТА] ✓ Успешно авторизован в Gmail")
@@ -258,6 +266,10 @@ def connect_to_gmail():
         print("  2. 2FA (двухфакторная аутентификация) не включена на аккаунте")
         print("  3. Email неправильный в .env файле")
         print(f"[ПОЧТА] Email в конфиге: {EMAIL}")
+        return None
+    except ssl.SSLError as e:
+        print(f"[ПОЧТА] ✗ SSL ошибка: {e}")
+        print(f"[ПОЧТА] Используются сертификаты из: {certifi.where()}")
         return None
     except socket.timeout:
         print("[ПОЧТА] ✗ Timeout - сервер Gmail не отвечает. Проверьте интернет соединение")

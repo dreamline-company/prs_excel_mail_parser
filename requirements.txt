@@ -2,3 +2,4 @@ requests==2.31.0
 openpyxl==3.11.0
 python-dotenv==1.0.0
 urllib3==2.1.0
+certifi

@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     dos2unix \
     curl \
-    && update-ca-certificates \
+    && update-ca-certificates --fresh \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements и устанавливаем зависимости
