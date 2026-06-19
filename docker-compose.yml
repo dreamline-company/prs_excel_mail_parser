@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prs-parser
+    restart: unless-stopped
+    environment:
+      - PARSER_EMAIL=${PARSER_EMAIL}
+      - PARSER_PASSWORD=${PARSER_PASSWORD}
+    volumes:
+      - ./results:/app/results
+      - ./processed:/app/processed
+    env_file:
+      - .env
+    networks:
+      - prs-network
+
+networks:
+  prs-network:
+    driver: bridge
