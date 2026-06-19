@@ -4,37 +4,34 @@ import json
 import os
 import re
 import openpyxl
-import hashlib
+import shutil
 import datetime
+import imaplib  # Добавили
+import email    # Добавили
+from email.header import decode_header  # Добавили
+from dotenv import load_dotenv
+# Глушим предупреждения о подменных сертификатах (защита от SSL ошибок)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+load_dotenv()
 # ==========================================
 # 1. НАСТРОЙКИ ПОЧТЫ И ПУТЕЙ
 # ==========================================
-# Берутся из файла .env через окружение Docker
-EMAIL = os.environ.get("PARSER_EMAIL", "dlc_prs@web-library.net")
-PASSWORD = os.environ.get("PARSER_PASSWORD")
-
-if not PASSWORD:
-    print("✗ КРИТИЧЕСКАЯ ОШИБКА: В файле .env не задан PARSER_PASSWORD!")
-    print("Работа скрипта остановлена.")
-    exit()
-
-API_URL = "https://api.mail.tm"
+EMAIL = os.getenv("PARSER_EMAIL")
+PASSWORD = os.getenv("PARSER_PASSWORD")
+API_URL = "http://108.181.186.12:8023/prs-analytics/api/repairs/v1/summaries/parsed"
+GMAIL_IMAP_SERVER = "imap.gmail.com"
+GMAIL_IMAP_PORT = 993
 script_dir = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE = os.path.join(script_dir, "processed_history.json")
 
 # ==========================================
 # 2. СЛОВАРИ ДЛЯ ПАРСЕРА
 # ==========================================
 CAR_PLATE_MAP = {
-    "024BH": "024BH06",
-    "250AKD": "250AMD",
-    "564AZ06": "564AY06",
-    "E247AHD": "AHD247E",
-    "153AAS": "153AS06",
-    "259ALD06": "ALD259E",
-    "480AZD": "AZD480E",
-    "730AU": "730AU06"
+    "024BH": "024BH06", "250AKD": "250AMD", "564AZ06": "564AY06",
+    "E247AHD": "AHD247E", "153AAS": "153AS06", "153AC": "153AS06", "259ALD06": "ALD259E",
+    "480AZD": "AZD480E", "730AU": "730AU06"
 }
 
 FIELD_CODE_MAP = {
@@ -70,7 +67,6 @@ FIELD_CODE_MAP = {
     "уаз северный": "UZS",
     "ю-в камышитовое": "UVK", "ювк": "UVK",
     "ю-з камышитовое": "UZK", "юзк": "UZK", "южный забурунный купол": "UZK",
-    
     "жайықмұнайгаз": "JMG", "жайыкмунайгаз": "JMG", "жмг": "JMG", "jmg": "JMG",
     "жылыоймұнайгаз": "ZhylMG", "жылыоймунайгаз": "ZhylMG", "жылмг": "ZhylMG", "жылымг": "ZhylMG", "zhylmg": "ZhylMG", "zmg": "ZhylMG",
     "доссормұнайгаз": "DMG", "доссормунайгаз": "DMG", "дмг": "DMG", "dmg": "DMG",
@@ -94,6 +90,55 @@ FIELD_NAME_MAP = {
     "KMG": "НГДУ Кайнармунайгаз"
 }
 
+def format_date(raw_date):
+    # 1. Если это уже объект даты (обработка openpyxl)
+    if isinstance(raw_date, datetime.datetime):
+        return raw_date.strftime("%d.%m.%Y")
+    
+    # 2. Если это число (стандартный формат Excel)
+    if isinstance(raw_date, (int, float)):
+        # Excel считает дни от 30 декабря 1899 года
+        dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=float(raw_date))
+        return dt.strftime("%d.%m.%Y")
+        
+    # 3. Если это строка — применяем вашу логику с регуляркой
+    s = str(raw_date).strip().replace("\n", "").replace(" ", "")
+    match = re.search(r'(\d{2})[.-](\d{2})[.-](\d{2,4})', s)
+    
+    if match:
+        day, month, year = match.groups()
+        if len(year) == 2:
+            year = "20" + year
+        elif len(year) > 4:
+            year = year[-4:]
+        return f"{day}.{month}.{year}"
+        
+    # 4. Fallback: если ничего не подошло
+    return datetime.datetime.now().strftime("%d.%m.%Y")
+
+def send_to_api(data):
+    try:
+        # Ключевое изменение: оборачиваем список в словарь с ключом 'summaries'
+        payload = {"summaries": data}
+        
+        r = requests.post(
+            API_URL,
+            json=payload, # Теперь данные отправляются в формате {"summaries": [...]}
+            timeout=60
+        )
+
+        print(f"[API] статус: {r.status_code}")
+        # Если статус не 200, мы увидим подробную ошибку от сервера
+        if r.status_code != 200:
+            print(f"[API] подробности ошибки: {r.text}")
+
+        return r.status_code == 200
+
+    except Exception as e:
+        print(f"[API] ошибка отправки: {e}")
+        return False
+
+
 # ==========================================
 # 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
@@ -108,12 +153,6 @@ def normalize_plate(plate):
         p = p.replace(cyr, lat)
     return p
 
-def get_file_hash(file_path):
-    hasher = hashlib.md5()
-    with open(file_path, 'rb') as f:
-        buf = f.read()
-        hasher.update(buf)
-    return hasher.hexdigest()
 
 def get_field_info(name):
     clean_name = str(name).lower().strip()
@@ -174,159 +213,205 @@ def generate_clean_filename(original_name, sheet_name):
     clean_name = re.sub(r'_+', '_', clean_name).strip('_')
     return clean_name.lower()
 
-def get_fresh_token(email, password):
-    print("Попытка авторизации на сервере почты...")
-    payload = {"address": email, "password": password}
+
+def make_key(item):
+    return (
+        item.get("start_date"),
+        item.get("well_name"),
+        item.get("shift_type_number"),
+        item.get("brigade_number"),
+        item.get("car"),
+        tuple(item.get("shift_details", []))
+    )
+
+def connect_to_gmail():
+    """Подключение к Gmail по IMAP SSL"""
     try:
-        response = requests.post(f"{API_URL}/token", json=payload, timeout=15)
-        if response.status_code == 200:
-            print("✓ Авторизация успешна! Токен получен.")
-            return response.json().get('token')
-        else:
-            print(f"✗ Ошибка авторизации: {response.status_code}. Проверьте пароль!")
-            return None
-    except Exception as e:
-        print(f"✗ Ошибка при получении токена: {e}")
+        imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT)
+        imap.login(EMAIL, PASSWORD)
+        return imap
+    except imaplib.IMAP4.error as e:
+        print(f"[ПОЧТА] ✗ Ошибка авторизации: {e}")
+        print("[ПОЧТА] Убедитесь, что в .env указан App Password (не обычный пароль)")
         return None
+    except Exception as e:
+        print(f"[ПОЧТА] ✗ Ошибка подключения: {e}")
+        return None
+
+def get_gmail_attachments():
+    """Скачивает .xlsx/.xls вложения из непрочитанных писем Gmail"""
+    imap = connect_to_gmail()
+    if not imap:
+        return []
+
+    result = []
+    try:
+        imap.select("INBOX")
+        status, messages = imap.search(None, "UNSEEN")
+        message_ids = messages[0].split()
+        print(f"[ПОЧТА] Непрочитанных писем: {len(message_ids)}")
+
+        for msg_id in message_ids:
+            try:
+                status, msg_data = imap.fetch(msg_id, "(RFC822)")
+                msg = email.message_from_bytes(msg_data[0][1])
+
+                has_xlsx = False
+                for part in msg.walk():
+                    if part.get_content_disposition() != "attachment":
+                        continue
+                    raw_filename = part.get_filename()
+                    if not raw_filename:
+                        continue
+                    decoded = decode_header(raw_filename)
+                    filename_bytes, charset = decoded[0]
+                    if isinstance(filename_bytes, bytes):
+                        filename = filename_bytes.decode(charset or "utf-8", errors="replace")
+                    else:
+                        filename = filename_bytes
+
+                    if not filename.lower().endswith((".xlsx", ".xls")):
+                        continue
+
+                    has_xlsx = True
+                    file_data = part.get_payload(decode=True)
+                    print(f"[ПОЧТА] Найдено вложение: {filename}")
+                    result.append({
+                        "filename": filename,
+                        "data": file_data,
+                        "msg_id": msg_id
+                    })
+
+                # Письма без xlsx помечаем как прочитанные (чтобы не мешали)
+                # Письма с xlsx НЕ трогаем — пометим/удалим после успешного сохранения
+                if not has_xlsx:
+                    imap.store(msg_id, "+FLAGS", "\\Seen")
+
+            except Exception as e:
+                print(f"[ПОЧТА] Ошибка обработки письма {msg_id}: {e}")
+
+        imap.close()
+        imap.logout()
+    except Exception as e:
+        print(f"[ПОЧТА] Ошибка: {e}")
+        try:
+            imap.close()
+            imap.logout()
+        except Exception:
+            pass
+
+    return result
+
+def delete_gmail_message(msg_id):
+    """Удаляет письмо из Gmail после успешного скачивания вложения"""
+    imap = connect_to_gmail()
+    if not imap:
+        return False
+    try:
+        imap.select("INBOX")
+        imap.store(msg_id, "+FLAGS", "\\Deleted")
+        imap.expunge()
+        imap.close()
+        imap.logout()
+        print(f"[ПОЧТА] Письмо {msg_id.decode()} удалено")
+        return True
+    except Exception as e:
+        print(f"[ПОЧТА] Ошибка удаления письма {msg_id}: {e}")
+        try:
+            imap.close()
+            imap.logout()
+        except Exception:
+            pass
+        return False
 
 # ==========================================
 # 4. ЗАПУСК И ГЛАВНЫЙ ЦИКЛ
 # ==========================================
-token = get_fresh_token(EMAIL, PASSWORD)
-if not token:
-    print("Внимание: Не удалось получить токен сразу. Будем пытаться в цикле...")
-
-headers = {"Authorization": f"Bearer {token}"} if token else {}
-
 print(f"\nРобот успешно запущен!")
 print(f"Папка для работы: {script_dir}")
 print("Перехожу в режим ожидания писем...")
-
+last_mail_check = 0
 while True:
     # ---------------------------------------------------------
-    # ШАГ 1: ПРОВЕРКА ПОЧТЫ И СКАЧИВАНИЕ НОВЫХ ФАЙЛОВ
+    # ШАГ 1: ПРОВЕРКА ПОЧТЫ И СКАЧИВАНИЕ НОВЫХ ФАЙЛОВ (Gmail IMAP)
     # ---------------------------------------------------------
-    if not headers.get("Authorization"):
-        token = get_fresh_token(EMAIL, PASSWORD)
-        if token:
-            headers = {"Authorization": f"Bearer {token}"}
-            
-    if headers.get("Authorization"):
-        try:
-            response = requests.get(f"{API_URL}/messages", headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                except ValueError:
-                    time.sleep(15)
-                    continue
-                    
-                messages = data.get('hydra:member', [])
-                
-                for msg in messages:
-                    msg_id = msg['id']
-                    full_msg_response = requests.get(f"{API_URL}/messages/{msg_id}", headers=headers, timeout=15)
-                    
-                    if full_msg_response.status_code == 200:
-                        full_msg = full_msg_response.json()
-                        attachments = full_msg.get('attachments', [])
-                        
-                        should_delete = True  
-                        
-                        for att in attachments:
-                            filename = att['filename']
-                            if filename.lower().endswith('.xlsx') or filename.lower().endswith('.xls'):
-                                print(f"\n[ПОЧТА] Найдена таблица: {filename}. Начинаю скачивание...")
-                                
-                                download_url = f"{API_URL}{att['downloadUrl']}"
-                                try:
-                                    file_response = requests.get(download_url, headers=headers, timeout=30)
-                                    if file_response.status_code == 200:
-                                        file_path = os.path.join(script_dir, filename)
-                                        with open(file_path, "wb") as f:
-                                            f.write(file_response.content)
-                                        print(f"[ПОЧТА] Успех! Файл сохранен: {filename}")
-                                    else:
-                                        print(f"[ПОЧТА] Ошибка скачивания: {file_response.status_code}. Письмо не будет удалено.")
-                                        should_delete = False
-                                except requests.exceptions.RequestException as e:
-                                    print(f"[ПОЧТА] Срыв при скачивании файла: {e}. Письмо не будет удалено.")
-                                    should_delete = False
-                                
-                        if should_delete:
-                            try:
-                                delete_response = requests.delete(f"{API_URL}/messages/{msg_id}", headers=headers, timeout=15)
-                                if delete_response.status_code == 204:
-                                    print("[ПОЧТА] Письмо успешно удалено из ящика.")
-                                else:
-                                    print(f"[ПОЧТА] Ошибка при удалении письма: {delete_response.status_code}")
-                            except requests.exceptions.RequestException as e:
-                                print(f"[ПОЧТА] Ошибка при удалении письма (таймаут): {e}")
-                        else:
-                            print(f"[ПОЧТА] Письмо {msg_id} оставлено в ящике для повторной попытки.")
-                            
-            elif response.status_code == 401:
-                print("\n[ПОЧТА] Токен истек! Пытаюсь получить новый...")
-                token = get_fresh_token(EMAIL, PASSWORD)
-                if token:
-                    headers = {"Authorization": f"Bearer {token}"}
-                else:
-                    headers = {}
-                    
-        except requests.exceptions.RequestException as e:
-            print(f"\n[СЕТЬ] Ошибка подключения к почтовому серверу: {type(e).__name__} (возможно, сервер mail.tm недоступен).")
+    if time.time() - last_mail_check > 300:
+        last_mail_check = time.time()
+        print("[СИСТЕМА] Проверка почты Gmail...")
+
+        attachments = get_gmail_attachments()
+
+        # msg_id -> {"total": N, "saved": N} — отслеживаем успех по каждому письму
+        msg_status = {}
+        for att in attachments:
+            mid = att["msg_id"]
+            if mid not in msg_status:
+                msg_status[mid] = {"total": 0, "saved": 0}
+            msg_status[mid]["total"] += 1
+
+            try:
+                base, ext = os.path.splitext(att["filename"])
+                unique_name = f"{base}_{att['msg_id'].decode()}{ext}"
+                file_path = os.path.join(script_dir, unique_name)
+
+                with open(file_path, "wb") as f:
+                    f.write(att["data"])
+
+                msg_status[mid]["saved"] += 1
+                print(f"[ПОЧТА] Сохранён: {unique_name}")
+            except Exception as e:
+                print(f"[ПОЧТА] Ошибка сохранения файла {att['filename']}: {e}")
+
+        # Удаляем письма где все вложения сохранены успешно
+        for mid, counts in msg_status.items():
+            if counts["saved"] == counts["total"]:
+                delete_gmail_message(mid)
+            else:
+                print(f"[ПОЧТА] Письмо {mid.decode()} оставлено (ошибка сохранения, повтор при следующей проверке)")
+
 
     # ---------------------------------------------------------
     # ШАГ 2: ПАРСИНГ ВСЕХ EXCEL ФАЙЛОВ В ПАПКЕ
     # ---------------------------------------------------------
-    processed_history = {}
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            try:
-                processed_history = json.load(f)
-            except json.JSONDecodeError:
-                processed_history = {}
+    processed_dir = os.path.join(script_dir, "processed")
+    if not os.path.exists(processed_dir):
+        os.makedirs(processed_dir)
 
     excel_files = [f for f in os.listdir(script_dir) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~$')]
 
     for target_file in excel_files:
         excel_path = os.path.join(script_dir, target_file)
-        current_hash = get_file_hash(excel_path)
-        
-        if target_file in processed_history and processed_history[target_file] == current_hash:
-            continue 
-            
         print(f"\n[ПАРСЕР] Начинаю обработку нового файла: '{target_file}'")
-        
+
         try:
             wb = openpyxl.load_workbook(excel_path, data_only=True)
             first_sheet_title = wb.sheetnames[0]
             result_json = []
-            
+
             for sheet in wb.worksheets:
                 print(f"  -> Обрабатываем лист: {sheet.title}")
 
-                # --- УМНАЯ ЗАЩИТА ОТ ОПЕЧАТОК ДИСПЕТЧЕРОВ ---
                 target_month = None
                 target_year = None
-                
+
                 MONTH_WORDS = {
-                    "январ": "01", "феврал": "02", "март": "03", "апрел": "04", 
-                    "май": "05", "мая": "05", "июн": "06", "июл": "07", 
-                    "август": "08", "сентябр": "09", "октябр": "10", 
+                    "январ": "01", "феврал": "02", "март": "03", "апрел": "04",
+                    "май": "05", "мая": "05", "июн": "06", "июл": "07",
+                    "август": "08", "сентябр": "09", "октябр": "10",
                     "ноябр": "11", "декабр": "12"
                 }
+
                 target_file_lower = target_file.lower()
+
                 for word, m_num in MONTH_WORDS.items():
                     if word in target_file_lower:
                         target_month = m_num
                         break
-                        
+
                 year_match = re.search(r'(202\d)', target_file_lower)
                 if year_match:
                     target_year = year_match.group(1)
-                    
+
                 if not target_month:
                     date_match = re.search(r'\d{2}[-.](\d{2})(?:[-.](\d{2,4}))?', sheet.title)
                     if date_match:
@@ -335,33 +420,43 @@ while True:
                             target_year = date_match.group(2)
                             if len(target_year) == 2:
                                 target_year = "20" + target_year
-                                
+
                 if not target_year:
                     target_year = str(datetime.datetime.now().year)
-                # ---------------------------------------------------------------
 
                 last_master_and_car = None
                 last_field_and_brigade = None
                 last_well = None
                 last_start_date = None
+                last_end_date = None
 
                 for row in range(4, sheet.max_row + 1):
-                    raw_b = sheet[f"B{row}"].value  
+                    raw_b = sheet[f"B{row}"].value
                     raw_c = sheet[f"C{row}"].value
                     raw_d = sheet[f"D{row}"].value
                     raw_n = sheet[f"N{row}"].value
-                    
-                    if raw_b is not None and str(raw_b).strip(): last_master_and_car = raw_b
-                    if raw_c is not None and str(raw_c).strip(): last_field_and_brigade = raw_c
-                    if raw_d is not None and str(raw_d).strip(): last_well = raw_d
-                    if raw_n is not None and str(raw_n).strip(): last_start_date = raw_n
-                    
+                    raw_o = sheet[f"O{row}"].value
+
+                    if (raw_b and str(raw_b).strip()) or (raw_d and str(raw_d).strip()):
+                        last_end_date = None
+
+                    if raw_b is not None and str(raw_b).strip():
+                        last_master_and_car = raw_b
+                    if raw_c is not None and str(raw_c).strip():
+                        last_field_and_brigade = raw_c
+                    if raw_d is not None and str(raw_d).strip():
+                        last_well = raw_d
+                    if raw_n is not None and str(raw_n).strip():
+                        last_start_date = raw_n
+                    if raw_o is not None and str(raw_o).strip():
+                        last_end_date = raw_o
+
                     shift_1_details = sheet[f"P{row}"].value
                     shift_2_details = sheet[f"Q{row}"].value
 
                     s1_str = str(shift_1_details or "").strip()
                     s2_str = str(shift_2_details or "").strip()
-                    
+
                     if s1_str in ("", "None", "-", "нет", ".") and s2_str in ("", "None", "-", "нет", "."):
                         continue
 
@@ -369,19 +464,48 @@ while True:
                     field_and_brigade = last_field_and_brigade
                     well = last_well
                     start_date = last_start_date
+                    end_date = last_end_date
 
                     clean_well_str = clean_spaces(str(well or "").replace('\n', ' '))
-                    stop_words = ["ожидани", "списан", "резерв", "ремонт", "база", "демалыс", "гараж"]
-                    
-                    is_s1_trash = any(word in s1_str.lower() for word in stop_words) if s1_str else True
-                    is_s2_trash = any(word in s2_str.lower() for word in stop_words) if s2_str else True
-                    
-                    if clean_well_str in ("", "None") and is_s1_trash and is_s2_trash:
+
+                    # Стоп-слова (русские + казахские)
+                    stop_words = [
+                        # Русские
+                        "ожидани", "списан", "резерв", "ремонт", "база", "демалыс", "гараж",
+                        "не полный", "работает с подъем",
+                        # Казахские статусные фразы
+                        "кезекте", "сақтауда", "толық емес", "жиналыста",
+                        "түнгі кезек", "оқуда болды",
+                    ]
+
+                    # Регулярка наличия временного диапазона (08:00-09:00 или 08.00-09.00)
+                    _HAS_TIME = re.compile(r'\d{2}[:.]\d{2}\s*[-–]\s*\d{2}[:.]\d{2}')
+
+                    def _is_trash(raw):
+                        if not raw or raw.strip().lower() in ("none", "-", "нет", "."):
+                            return True
+                        # Нет ни одного временного отрезка → статусная заметка, не работа
+                        if not _HAS_TIME.search(raw):
+                            return True
+                        # Содержит известное стоп-слово
+                        return any(w in raw.lower() for w in stop_words)
+
+                    is_s1_trash = _is_trash(s1_str)
+                    is_s2_trash = _is_trash(s2_str)
+
+                    if is_s1_trash and is_s2_trash:
                         continue
 
-                    # ==========================================
-                    # Парсинг столбца B (Мастер и машина) 
-                    # ==========================================
+                    raw_end_date_str = str(end_date or "").strip()
+                    second_well_name = ""
+
+                    if raw_end_date_str:
+                        match_well = re.search(r'(?i)скв[^0-9]*(\d{3,4})', raw_end_date_str)
+                        if match_well:
+                            w = match_well.group(1)
+                            if not (len(w) == 4 and 2000 <= int(w) <= 2099):
+                                second_well_name = w
+
                     raw_b_str = str(master_and_car or "").strip()
                     search_str = re.sub(r'(?i)kz\s*', ' ', raw_b_str)
                     
@@ -450,144 +574,142 @@ while True:
                     else:
                         car_field_value = "Не указана"
 
-                    # ==========================================
-                    # Парсинг столбца C 
-                    # ==========================================
                     clean_c = str(field_and_brigade or "").strip()
-                    cell_lines = [str(x).strip() for x in clean_c.splitlines() if str(x).strip()]
-
-                    brigade_name = "Не указана"
-                    field_code = "UNKNOWN"
-                    device_number = None 
-
-                    if cell_lines:
-                        found_brigade = False
-                        for line in cell_lines:
-                            if any(x in line.lower() for x in ["бригада", "бр.", "бр№", "бр-", "отряд"]):
-                                brigade_name = clean_spaces(line)
-                                found_brigade = True
-                                break
-                        if not found_brigade:
-                            brigade_name = clean_spaces(cell_lines[-1]) if cell_lines else "Не указана"
-
-                        for i, line in enumerate(cell_lines):
-                            if "дэл" in line.lower():
-                                match_num = re.search(r'№\s*(\d+)', line)
-                                if match_num:
-                                    device_number = match_num.group(1)
-                                elif i + 1 < len(cell_lines) and "№" in cell_lines[i+1] and "бригада" not in cell_lines[i+1].lower():
-                                    match_next = re.search(r'№\s*(\d+)', cell_lines[i+1])
-                                    if match_next:
-                                        device_number = match_next.group(1)
-                                break
-
-                        raw_field = cell_lines[0].strip()
-                        if "ДЭЛ" in raw_field:
-                            raw_field = raw_field.split("ДЭЛ")[0].strip()
-                        
-                        if not raw_field or any(x in raw_field.lower() for x in ["бригада", "бр.", "бр№", "бр-"]):
-                            field_code = "UNKNOWN"
-                        else:
-                            field_code, _ = get_field_info(raw_field)
+                    cell_lines = [x.strip() for x in clean_c.splitlines() if x.strip()]
 
                     brigade_num_final = None
-                    brigade_match = re.search(r'\d+', brigade_name)
-                    if brigade_match:
-                        brigade_num_final = int(brigade_match.group(0))
+                    device_number = None
+                    if cell_lines:
+                        for line in cell_lines:
+                            if "бригада" in line.lower():
+                                # Ищем число ≤ 999 (реальный номер бригады)
+                                for m in re.finditer(r'\d+', line):
+                                    val = int(m.group(0))
+                                    if val <= 999:
+                                        brigade_num_final = val
+                                        break
+
+                        # Извлекаем номер агрегата из ячейки колонки C
+                        # Номер агрегата — 4+ цифр (15679, 11983...), номер бригады — 1-3 цифры
+                        for line in cell_lines:
+                            if "бригада" in line.lower():
+                                continue
+                            m = re.search(r'№\s*(\d{4,})', line)
+                            if m:
+                                device_number = m.group(1)
+                                break
 
                     well_clean = clean_well_str.upper()
                     pump_type = "Не указан"
-                    tech_words = ["ШГН", "ЭБС", "ФОНТАН", "Б/Д", "ПОГЛ", "ТҚ", "ТК", "ЛШПН", "ЛШ"]
-                    
-                    found_pumps = []
-                    for tech_word in tech_words:
-                        if tech_word in well_clean:
-                            found_pumps.append(tech_word)
-                            well_clean = well_clean.replace(tech_word, "")
-                            
-                    if found_pumps:
-                        pump_type = ", ".join(found_pumps)
-                        
-                    well_clean = well_clean.strip()
+
+                    tech_words = ["ШГН", "ЭБС", "ФОНТАН"]
+                    for t in tech_words:
+                        if t in well_clean:
+                            pump_type = t
 
                     well_digit_match = re.search(r'\d+', well_clean)
+
                     if well_digit_match:
                         num_part = int(well_digit_match.group(0))
-                        suffix_match = re.search(r'\d+\s*([A-ZА-ЯЁ]{1,2})', well_clean)
-                        suffix = suffix_match.group(1) if suffix_match else ""
-                        well_name_final = f"{field_code}_{num_part:04d}{suffix}"
+                        well_name_final = f"WL_{num_part:04d}"
                     else:
-                        well_name_final = f"{field_code}_{well_clean.replace(' ', '_')}" if well_clean else f"{field_code}_UNKNOWN"
+                        well_name_final = "WL_UNKNOWN"
 
-                    # ==========================================
-                    # Парсинг даты 
-                    # ==========================================
                     if hasattr(start_date, 'strftime'):
-                        orig_date_str = start_date.strftime("%d.%m.%Y")
+                        date_str = start_date.strftime("%d.%m.%Y")
                     else:
-                        raw_date_str = str(start_date or "")
-                        date_match = re.search(r'(\d{2})[./-](\d{2})[./-](\d{2,4})', raw_date_str)
-                        if date_match:
-                            d_day = date_match.group(1)
-                            d_mon = date_match.group(2)
-                            d_year = date_match.group(3)
-                            if len(d_year) == 2:
-                                d_year = "20" + d_year
-                            orig_date_str = f"{d_day}.{d_mon}.{d_year}"
-                        else:
-                            orig_date_str = clean_spaces(raw_date_str).replace('\n', ' ')
-
-                    date_str = orig_date_str
-                    if target_month and target_year and re.match(r'\d{2}\.\d{2}\.\d{4}', orig_date_str):
-                        d_day = orig_date_str.split('.')[0]
-                        date_str = f"{d_day}.{target_month}.{target_year}"
+                        date_str = str(start_date)
 
                     shift_1_list = parse_shift_text(shift_1_details)
                     shift_2_list = parse_shift_text(shift_2_details)
 
-                    if shift_1_list and not is_s1_trash:
-                        result_json.append({
-                            "start_date": date_str,
-                            "brigade_number": brigade_num_final,
+                    if shift_1_list:
+                        record = {
+                            "start_date": format_date(start_date),
+                            "brigade_number": int(brigade_num_final) if brigade_num_final else 0,
                             "well_name": well_name_final,
+                            "second_well_name": second_well_name,
                             "pump_type": pump_type,
                             "shift_type_number": 1,
-                            "car": car_field_value,       
-                            "device_number": device_number, 
+                            "car": car_field_value,
+                            "device_number": device_number if device_number else "",
                             "shift_details": shift_1_list
-                        })
+                        }
+                        result_json.append(record)
 
-                    if shift_2_list and not is_s2_trash:
-                        result_json.append({
-                            "start_date": date_str,
-                            "brigade_number": brigade_num_final,
+                    if shift_2_list:
+                        record = {
+                            "start_date": format_date(start_date),
+                            "brigade_number": int(brigade_num_final) if brigade_num_final else 0,
                             "well_name": well_name_final,
+                            "second_well_name": second_well_name,
                             "pump_type": pump_type,
                             "shift_type_number": 2,
-                            "car": car_field_value,       
-                            "device_number": device_number, 
+                            "car": car_field_value,
+                            "device_number": device_number if device_number else "",
                             "shift_details": shift_2_list
-                        })
+                        }
+                        result_json.append(record)
 
-            clean_base_name = generate_clean_filename(target_file, first_sheet_title)
-            output_filename = f"{clean_base_name}.json"
-            output_path = os.path.join(script_dir, output_filename)
+            # =========================
+            # JSON САВИНГ (ВАЖНО)
+            # =========================
 
-            counter = 1
-            while os.path.exists(output_path):
-                output_filename = f"{clean_base_name}_{counter}.json"
-                output_path = os.path.join(script_dir, output_filename)
+            date_now = datetime.datetime.now().strftime("%Y-%m-%d")
+            year_month = datetime.datetime.now().strftime("%Y-%m")
+
+            output_dir = os.path.join(script_dir, "results", year_month)
+            os.makedirs(output_dir, exist_ok=True)
+
+            output_filename = f"{date_now}.json"
+            output_path = os.path.join(output_dir, output_filename)
+
+            def make_key(item):
+                return (
+                    item.get("start_date"),
+                    item.get("well_name"),
+                    item.get("shift_type_number"),
+                    item.get("brigade_number"),
+                    item.get("car")
+                )
+
+            existing_data = []
+
+            if os.path.exists(output_path):
+                try:
+                    with open(output_path, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                except:
+                    existing_data = []
+
+            existing_keys = set(str(x) for x in existing_data)
+
+            for item in result_json:
+                if str(item) not in existing_keys:
+                    existing_data.append(item)
+                    existing_keys.add(str(item))
 
             with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(result_json, f, ensure_ascii=False, indent=2)
+                json.dump(existing_data, f, ensure_ascii=False, indent=2)
 
-            processed_history[target_file] = current_hash
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(processed_history, f, ensure_ascii=False, indent=2)
+            print(f"[ПАРСЕР] Готово: {len(result_json)} записей")
 
-            print(f"[ПАРСЕР] Готово! Создан файл: {output_filename} (Смен: {len(result_json)})")
-            
+            if result_json:
+                print("[API] отправка данных...")
+
+                success = send_to_api(result_json)
+
+                if success:
+                    print("[API] успешно отправлено")
+                else:
+                    print("[API] ошибка отправки")
+            else:
+                print("[API] нет данных для отправки")
+
+            shutil.move(excel_path, os.path.join(processed_dir, target_file))
+            print(f"[ПАРСЕР] Перемещён в processed")
+
         except Exception as e:
-            print(f"[ПАРСЕР] Ошибка при обработке файла {target_file}: {e}")
+            print(f"[ПАРСЕР] Ошибка: {e}")
 
     time.sleep(15)
