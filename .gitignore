@@ -5,3 +5,7 @@ processed/
 results/
 .vscode/
 .DS_Store
+inbox/
+failed/
+*.xlsx
+*.xlsm

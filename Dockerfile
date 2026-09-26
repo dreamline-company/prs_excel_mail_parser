@@ -16,14 +16,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем код приложения
-COPY main.py .
+COPY main.py summary_parser.py upload_summaries.py .
 COPY .env .env 2>/dev/null || true
 
 # Конвертируем .env в Unix формат (убираем CRLF если есть)
 RUN if [ -f .env ]; then dos2unix .env; fi
 
 # Создаём директорию для обработанных файлов
-RUN mkdir -p processed
+RUN mkdir -p inbox processed failed
 
 # Запускаем приложение
 CMD ["python", "main.py"]
