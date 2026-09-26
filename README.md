@@ -12,6 +12,7 @@ Email-бот для парсинга Excel файлов из Gmail и отпра
 ```
 PARSER_EMAIL=<ваш Gmail адрес>
 PARSER_PASSWORD=<16-символьный App Password>
+SUMMARIES_API_URL=http://localhost:8023/prs-analytics/api/repairs/v1/summaries/parsed
 ```
 
 ## Быстрый запуск
@@ -53,7 +54,9 @@ docker rm prs-parser
 
 ```
 .
-├── main.py              # Основной скрипт
+├── main.py              # Почтовый бот (Gmail -> inbox/ -> API)
+├── summary_parser.py    # Разбор xlsx-сводки в записи API
+├── upload_summaries.py  # CLI-загрузка xlsx без почты
 ├── requirements.txt     # Python зависимости
 ├── Dockerfile          # Конфигурация Docker
 ├── docker-compose.yml  # Docker Compose конфигурация
@@ -61,6 +64,28 @@ docker rm prs-parser
 ├── .env.example        # Пример конфигурации
 └── processed/          # Обработанные Excel файлы
 ```
+
+## Загрузка без почты
+
+`upload_summaries.py` разбирает те же xlsx и отправляет их в бэкенд напрямую —
+удобно грузить архив сводок или проверять файл, не дожидаясь письма:
+
+```bash
+pip install -r requirements.txt
+# все xlsx из папки (адрес API — из .env SUMMARIES_API_URL или --api-url)
+python upload_summaries.py ~/Documents/prs
+# только разобрать и посмотреть статистику, JSON сложить в ./parsed
+python upload_summaries.py "Сводка ПРС за сентябрь.xlsx" --dry-run --out ./parsed
+# после успешной загрузки переносить файлы в processed/
+python upload_summaries.py ./inbox --move-to ./processed
+```
+
+Разбор книги — `summary_parser.py` (общий для бота и CLI): лист = сутки,
+дата записи берётся из названия листа; секции по НГДУ; имя скважины собирается
+как `<КОД_МЕСТОРОЖДЕНИЯ>_<NNNN>` (`BLG_0251`, `ZPV_403R`, `DSR_37/9`) из колонок
+C и D; номер бригады — из «Бригада №N» (колонки C или B), колонка A — порядковый
+номер, не бригада. Статистика разбора печатается по каждому файлу: неизвестные
+месторождения и нераспознанные скважины стоит проверить глазами.
 
 ## Функционал
 
@@ -75,6 +100,6 @@ docker rm prs-parser
 
 ## Примечания
 
-- Приложение работает постоянно в цикле, проверяя почту каждые 300 секунд
-- Обработанные файлы перемещаются в папку `processed`
-- Результаты сохраняются в `results/YYYY-MM/DD.MM.YY.json`
+- Приложение работает постоянно в цикле, проверяя почту каждые `MAIL_CHECK_INTERVAL` секунд (300)
+- Вложения складываются в `inbox/`, после загрузки уходят в `processed/`, при ошибке — в `failed/`
+- Адрес бэкенда — `SUMMARIES_API_URL` в `.env`
