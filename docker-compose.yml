@@ -10,13 +10,17 @@ services:
     environment:
       - PARSER_EMAIL=${PARSER_EMAIL}
       - PARSER_PASSWORD=${PARSER_PASSWORD}
+      # Бот стоит рядом с бэкендом: API — в его docker-сети по имени контейнера
+      # (localhost внутри контейнера — сам контейнер). Можно переопределить в .env.
+      - SUMMARIES_API_URL=${SUMMARIES_API_URL:-http://prs_eff_api:8000/prs-analytics/api/repairs/v1/summaries/parsed}
     volumes:
       - ./processed:/app/processed
     env_file:
       - .env
     networks:
-      - prs-network
+      - prs_effectiveness_network
 
 networks:
-  prs-network:
-    driver: bridge
+  # Сеть бэкенда (deploy/app/compose.common.yml в prs_effectiveness_backend).
+  prs_effectiveness_network:
+    external: true
