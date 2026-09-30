@@ -25,6 +25,10 @@ from dotenv import load_dotenv
 from summary_parser import ParseResult, parse_workbook
 
 DEFAULT_API_URL = "http://localhost:8023/prs-analytics/api/repairs/v1/summaries/parsed"
+# Записей в одном POST: месячный файл — ~1 000 записей и >1 МБ JSON, а прокси перед
+# API отдаёт 413 на большие тела. Бэкенд делает upsert по ключу, поэтому части
+# одного файла независимы.
+DEFAULT_CHUNK = 200
 
 
 def collect_files(paths: list[str]) -> list[Path]:
@@ -40,8 +44,7 @@ def collect_files(paths: list[str]) -> list[Path]:
     return files
 
 
-def send_records(records: list[dict], api_url: str, *, timeout: int = 600) -> tuple[bool, dict | str]:
-    """POST {"summaries": [...]} -> (успех, разобранный ответ или текст ошибки)."""
+def _post(records: list[dict], api_url: str, timeout: int) -> tuple[bool, dict | str]:
     try:
         resp = requests.post(api_url, json={"summaries": records}, timeout=timeout)
     except requests.RequestException as exc:
@@ -49,10 +52,46 @@ def send_records(records: list[dict], api_url: str, *, timeout: int = 600) -> tu
     try:
         body = resp.json()
     except ValueError:
-        body = resp.text[:500]
+        body = resp.text[:300]
     if resp.status_code != 200:
         return False, f"HTTP {resp.status_code}: {body}"
     return True, body
+
+
+def _merge_results(parts: list[dict]) -> dict:
+    """Сложить ответы по частям в один: счётчики суммируются, списки объединяются."""
+    total: dict = {}
+    for part in parts:
+        data = part.get("data", part) if isinstance(part, dict) else {}
+        for key, value in data.items():
+            if isinstance(value, (int, float)):
+                total[key] = total.get(key, 0) + value
+            elif isinstance(value, list):
+                total[key] = sorted(set(total.get(key, [])) | set(value))
+    return total
+
+
+def send_records(
+    records: list[dict],
+    api_url: str,
+    *,
+    timeout: int = 600,
+    chunk: int = DEFAULT_CHUNK,
+) -> tuple[bool, dict | str]:
+    """POST {"summaries": [...]} частями по ``chunk`` записей.
+
+    Возвращает (успех, сводный ответ или текст первой ошибки). При ошибке части
+    остальные не шлём: уже принятые части в базе, повторная загрузка файла их
+    безопасно перезапишет.
+    """
+    parts: list[dict] = []
+    for offset in range(0, len(records), max(chunk, 1)):
+        ok, body = _post(records[offset : offset + chunk], api_url, timeout)
+        if not ok:
+            sent = offset
+            return False, f"часть {offset // chunk + 1} (после {sent} записей): {body}"
+        parts.append(body if isinstance(body, dict) else {})
+    return True, _merge_results(parts)
 
 
 def format_result(body: dict | str) -> str:
@@ -67,7 +106,15 @@ def format_result(body: dict | str) -> str:
     return ", ".join(parts)
 
 
-def process_file(path: Path, *, api_url: str, dry_run: bool, out_dir: Path | None, move_to: Path | None) -> bool:
+def process_file(  # noqa: PLR0913
+    path: Path,
+    *,
+    api_url: str,
+    dry_run: bool,
+    out_dir: Path | None,
+    move_to: Path | None,
+    chunk: int = DEFAULT_CHUNK,
+) -> bool:
     print(f"\n[ПАРСЕР] {path.name}")
     try:
         result: ParseResult = parse_workbook(path)
@@ -88,7 +135,7 @@ def process_file(path: Path, *, api_url: str, dry_run: bool, out_dir: Path | Non
     if dry_run:
         return True
 
-    ok, body = send_records(result.records, api_url)
+    ok, body = send_records(result.records, api_url, chunk=chunk)
     print(f"  [API] {'OK' if ok else 'ОШИБКА'}: {format_result(body)}")
     if ok and move_to is not None:
         move_to.mkdir(parents=True, exist_ok=True)
@@ -105,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="только разобрать, не отправлять")
     parser.add_argument("--out", type=Path, default=None, help="папка для JSON с разобранными записями")
     parser.add_argument("--move-to", type=Path, default=None, help="куда переносить успешно загруженные файлы")
+    parser.add_argument("--chunk", type=int, default=int(os.getenv("SUMMARIES_CHUNK", DEFAULT_CHUNK)), help="записей в одном POST")
     args = parser.parse_args(argv)
 
     files = collect_files(args.paths)
@@ -114,7 +162,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"API: {args.api_url}{'  (dry-run)' if args.dry_run else ''}; файлов: {len(files)}")
     failures = 0
     for path in files:
-        if not process_file(path, api_url=args.api_url, dry_run=args.dry_run, out_dir=args.out, move_to=args.move_to):
+        if not process_file(
+            path,
+            api_url=args.api_url,
+            dry_run=args.dry_run,
+            out_dir=args.out,
+            move_to=args.move_to,
+            chunk=args.chunk,
+        ):
             failures += 1
     print(f"\nГотово: {len(files) - failures} из {len(files)} файлов" + (" (dry-run)" if args.dry_run else ""))
     return 1 if failures else 0
