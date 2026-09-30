@@ -32,6 +32,10 @@ EMAIL = os.getenv("PARSER_EMAIL")
 PASSWORD = os.getenv("PARSER_PASSWORD")
 API_URL = os.getenv("SUMMARIES_API_URL", DEFAULT_API_URL)
 MAIL_CHECK_INTERVAL = int(os.getenv("MAIL_CHECK_INTERVAL", "300"))
+# false — не проверять сертификат IMAP: в сети сервера FortiGate подменяет
+# сертификат imap.gmail.com своим. Принимается любой сертификат, решение
+# владельца (30.09.2026); по умолчанию проверка включена.
+IMAP_SSL_VERIFY = os.getenv("IMAP_SSL_VERIFY", "true").lower() != "false"
 GMAIL_IMAP_SERVER = "imap.gmail.com"
 GMAIL_IMAP_PORT = 993
 script_dir = Path(__file__).resolve().parent
@@ -62,8 +66,10 @@ def connect_to_gmail():
         
         # Создаём SSL контекст с явным путём к сертификатам
         ssl_context = ssl.create_default_context(cafile=certifi.where())
-        ssl_context.check_hostname = True
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.check_hostname = IMAP_SSL_VERIFY
+        ssl_context.verify_mode = ssl.CERT_REQUIRED if IMAP_SSL_VERIFY else ssl.CERT_NONE
+        if not IMAP_SSL_VERIFY:
+            print("[ПОЧТА] Проверка сертификата IMAP отключена (IMAP_SSL_VERIFY=false)")
         
         imap = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, ssl_context=ssl_context, timeout=10)
         print(f"[ПОЧТА] Авторизация пользователя: {EMAIL}...")
