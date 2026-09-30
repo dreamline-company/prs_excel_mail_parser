@@ -13,6 +13,9 @@ services:
       # Бот стоит рядом с бэкендом: API — в его docker-сети по имени контейнера
       # (localhost внутри контейнера — сам контейнер). Можно переопределить в .env.
       - SUMMARIES_API_URL=${SUMMARIES_API_URL:-http://prs_eff_api:8000/prs-analytics/api/repairs/v1/summaries/parsed}
+      # FortiGate подменяет сертификат imap.gmail.com — без проверки (решение
+      # владельца). В .env можно вернуть true.
+      - IMAP_SSL_VERIFY=${IMAP_SSL_VERIFY:-false}
     volumes:
       - ./processed:/app/processed
     env_file:
