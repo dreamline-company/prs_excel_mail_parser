@@ -1,6 +1,7 @@
 # PRS Excel Mail Parser
 
-Email-бот для парсинга Excel файлов из Gmail и отправки в REST API.
+Email-бот: забирает Excel-сводки ПРС из почтового ящика (IMAP) и отправляет в REST API.
+Рабочий ящик — `emg_prs-svodki@emg.kmg.kz` на корпоративном Exchange `mail.emg.kmg.kz`.
 
 ## Требования
 
@@ -10,10 +11,17 @@ Email-бот для парсинга Excel файлов из Gmail и отпра
 ## Переменные окружения (.env)
 
 ```
-PARSER_EMAIL=<ваш Gmail адрес>
-PARSER_PASSWORD=<16-символьный App Password>
-SUMMARIES_API_URL=http://localhost:8023/prs-analytics/api/repairs/v1/summaries/parsed
+PARSER_EMAIL=emg_prs-svodki@emg.kmg.kz
+PARSER_PASSWORD=<пароль ящика>
+PARSER_LOGIN=               # если Exchange не примет адрес: EMG\emg_prs-svodki
+IMAP_HOST=mail.emg.kmg.kz   # Gmail: imap.gmail.com (App Password)
+IMAP_PORT=993
+IMAP_FOLDER=INBOX
+IMAP_SSL_VERIFY=false       # сертификат Exchange самоподписанный
+SUMMARIES_API_URL=http://prs_eff_api:8000/prs-analytics/api/repairs/v1/summaries/parsed
 ```
+
+Полный образец — `.env.example`.
 
 ## Быстрый запуск
 
@@ -54,7 +62,7 @@ docker rm prs-parser
 
 ```
 .
-├── main.py              # Почтовый бот (Gmail -> inbox/ -> API)
+├── main.py              # Почтовый бот (IMAP -> inbox/ -> API)
 ├── summary_parser.py    # Разбор xlsx-сводки в записи API
 ├── upload_summaries.py  # CLI-загрузка xlsx без почты
 ├── requirements.txt     # Python зависимости
@@ -89,7 +97,7 @@ C и D; номер бригады — из «Бригада №N» (колонк
 
 ## Функционал
 
-- ✅ Подключение к Gmail по IMAP SSL
+- ✅ Подключение к ящику по IMAP SSL (Exchange или Gmail), письма адресуются по UID
 - ✅ Скачивание .xlsx/.xls вложений
 - ✅ Парсинг данных в JSON структуру
 - ✅ Отправка на REST API

@@ -10,11 +10,17 @@ services:
     environment:
       - PARSER_EMAIL=${PARSER_EMAIL}
       - PARSER_PASSWORD=${PARSER_PASSWORD}
+      # Логин IMAP, если не совпадает с адресом (Exchange: DOMAIN\user).
+      - PARSER_LOGIN=${PARSER_LOGIN:-}
+      # Корпоративный Exchange: тот же сегмент сети, что и сервер (10.32.10.62/63).
+      - IMAP_HOST=${IMAP_HOST:-mail.emg.kmg.kz}
+      - IMAP_PORT=${IMAP_PORT:-993}
+      - IMAP_FOLDER=${IMAP_FOLDER:-INBOX}
       # Бот стоит рядом с бэкендом: API — в его docker-сети по имени контейнера
       # (localhost внутри контейнера — сам контейнер). Можно переопределить в .env.
       - SUMMARIES_API_URL=${SUMMARIES_API_URL:-http://prs_eff_api:8000/prs-analytics/api/repairs/v1/summaries/parsed}
-      # FortiGate подменяет сертификат imap.gmail.com — без проверки (решение
-      # владельца). В .env можно вернуть true.
+      # Сертификат Exchange самоподписанный (CN=emg-ex-mbx01) — без проверки
+      # (решение владельца). В .env можно вернуть true.
       - IMAP_SSL_VERIFY=${IMAP_SSL_VERIFY:-false}
     volumes:
       - ./processed:/app/processed
