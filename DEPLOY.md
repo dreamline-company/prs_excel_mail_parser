@@ -1,6 +1,8 @@
-# PRS Parser - Gmail IMAP Bot
+# PRS Parser — почтовый бот сводок ПРС (IMAP)
 
-Бот для автоматической загрузки и парсинга Excel файлов с работ из Gmail, с отправкой результатов в REST API.
+Бот забирает Excel-сводки ПРС из почтового ящика и отправляет результаты в REST API.
+Рабочий ящик — `emg_prs-svodki@emg.kmg.kz` на корпоративном Exchange `mail.emg.kmg.kz`
+(10.32.10.62 / 10.32.10.63 — та же сеть, что и сервер 10.32.10.90; Gmail с сервера недоступен).
 
 ## Быстрый старт на Linux
 
@@ -34,8 +36,8 @@ docker-compose down
 ## Требования
 
 - Docker & Docker Compose
-- Gmail аккаунт с включённой 2FA
-- App Password (16 символов, не обычный пароль)
+- Ящик Exchange `emg_prs-svodki@emg.kmg.kz` и его пароль (IMAP SSL 993 на `mail.emg.kmg.kz`)
+- Для Gmail (`IMAP_HOST=imap.gmail.com`): 2FA и App Password
 
 ## Диагностика проблем
 
@@ -59,12 +61,17 @@ docker-compose down
    docker exec prs-parser python -c "import ssl; print(ssl.get_default_verify_paths())"
    ```
 
-### App Password ошибка
+### Ошибка входа (IMAP: LOGIN failed / AUTHENTICATE failed)
 
-Gmail не принимает обычные пароли через IMAP. Требуется:
-1. Включить 2FA: https://myaccount.google.com/security
-2. Создать App Password: https://myaccount.google.com/apppasswords
-3. Использовать 16-символьный App Password в .env (без пробелов)
+- Exchange: проверьте пароль; если не принимает адрес ящика, задайте в `.env`
+  `PARSER_LOGIN=EMG\emg_prs-svodki` (домен\пользователь; имя домена уточнить у админов).
+- Gmail: обычные пароли через IMAP не принимаются — нужен App Password при 2FA
+  (https://myaccount.google.com/apppasswords).
+
+### SSL: CERTIFICATE_VERIFY_FAILED
+
+Сертификат Exchange самоподписанный (CN=emg-ex-mbx01): нужен `IMAP_SSL_VERIFY=false`
+(в docker-compose это значение по умолчанию).
 
 ### Контейнер не начинает работу
 
@@ -75,26 +82,20 @@ docker-compose logs prs-parser
 # Проверить что .env загружен
 docker exec prs-parser env | grep PARSER
 
-# Тестовое подключение к Gmail
+# Тестовое подключение к ящику (те же настройки, что у бота)
 docker exec prs-parser python -c "
-import imaplib
-import os
-email = os.getenv('PARSER_EMAIL')
-password = os.getenv('PARSER_PASSWORD')
-try:
-    imap = imaplib.IMAP4_SSL('imap.gmail.com', 993, timeout=10)
-    imap.login(email, password)
-    print('✓ OK')
-    imap.close()
-except Exception as e:
-    print(f'✗ Error: {e}')
+import main
+imap = main.connect_to_mail()
+print('✓ OK' if imap else '✗ см. сообщение выше')
+imap and imap.logout()
 "
 ```
 
 ## Архитектура
 
 - **main.py** - Основной скрипт
-  - Подключается к Gmail IMAP (SSL на порту 993)
+  - Подключается к ящику по IMAP SSL (`IMAP_HOST:IMAP_PORT`, по умолчанию Exchange `mail.emg.kmg.kz:993`)
+  - Письма адресуются по UID; письмо удаляется только после сохранения всех его вложений
   - Скачивает .xlsx/.xls вложения
   - Парсит работы из Excel
   - Отправляет JSON результаты на REST API
